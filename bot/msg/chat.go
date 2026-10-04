@@ -24,6 +24,14 @@ type Manager struct {
 	pl     *playerlist.PlayerList
 	events EventsHandler
 
+	// Dropped counts chat lines discarded rather than delivered, with
+	// SenderUnknown and ChatTypeUnknown breaking out the two causes a
+	// downgrading proxy produces. They are only ever written from the packet
+	// goroutine, which is the only goroutine that handles chat.
+	Dropped         int
+	SenderUnknown   int
+	ChatTypeUnknown int
+
 	sign.SignatureCache
 }
 
@@ -88,17 +96,29 @@ func (m *Manager) handlePlayerChat(packet pk.Packet) error {
 		return nil
 	}
 
+	// The three lookups below can all fail on a line that decoded perfectly
+	// well, and behind a downgrading proxy they do: the signature cache was
+	// never populated because signing is stripped, the sender may not be in a
+	// player list the proxy rebuilt, and a 26.2 chat type need not have an id
+	// this version's registry knows. None of that is worth the connection --
+	// the line is dropped and the session carries on. ChatTypeUnknown and
+	// SenderUnknown are exported so a caller can count what it is losing.
 	unpackedMsg, err := body.Unpack(&m.SignatureCache)
 	if err != nil {
-		return InvalidChatPacket
+		m.Dropped++
+		return nil
 	}
 	senderInfo, ok := m.pl.PlayerInfos[uuid.UUID(sender)]
 	if !ok {
-		return InvalidChatPacket
+		m.Dropped++
+		m.SenderUnknown++
+		return nil
 	}
 	ct := m.c.Registries.ChatType.FindByID(chatType.ID)
 	if ct == nil {
-		return InvalidChatPacket
+		m.Dropped++
+		m.ChatTypeUnknown++
+		return nil
 	}
 
 	var message sign.Message
