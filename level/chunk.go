@@ -292,7 +292,12 @@ func (c *Chunk) ReadFrom(r io.Reader) (int64, error) {
 	)
 
 	n, err := pk.Tuple{
-		pk.NBT(&heightmaps),
+		// Newer servers carry heightmaps this version does not know
+		// (MOTION_BLOCKING_NO_LEAVES, from 1.21), and a downgrading proxy
+		// passes them straight through. Skipping them is safe -- the two
+		// read here are the only ones used, and the blocks themselves come
+		// from the byte array below, not from any heightmap.
+		pk.NBTField{V: &heightmaps, AllowUnknownFields: true},
 		&data,
 		pk.Array(&c.BlockEntity),
 		&lightData{
