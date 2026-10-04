@@ -495,7 +495,23 @@ func (l *lightData) ReadFrom(r io.Reader) (int64, error) {
 }
 
 // decodeLight parses one candidate layout and reports whether it holds up.
-func decodeLight(buf []byte, trustEdges bool) (*lightData, error) {
+//
+// Parsing a layout that does not fit means feeding light data to a length
+// field, and ByteArray.ReadFrom slices on that length without checking the
+// sign -- a negative one panics with "slice bounds out of range" rather than
+// returning an error. That is survivable when the parse is a guess, so the
+// panic is turned back into the rejection it should have been. This cost the
+// bot a crash on its first chunk before it was caught.
+func decodeLight(buf []byte, trustEdges bool) (out *lightData, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			out, err = nil, fmt.Errorf("layout does not fit: %v", r)
+		}
+	}()
+	return decodeLightLayout(buf, trustEdges)
+}
+
+func decodeLightLayout(buf []byte, trustEdges bool) (*lightData, error) {
 	var (
 		out      lightData
 		edges    pk.Boolean

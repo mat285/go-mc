@@ -130,3 +130,23 @@ func TestLightDataChecksMasksAgainstArrays(t *testing.T) {
 		t.Error("accepted a mask that disagrees with the arrays it announces")
 	}
 }
+
+// TestLightDataSurvivesAPanickingLayout: trying a layout that does not fit
+// feeds light data to a length field, and ByteArray slices on it without
+// checking the sign -- a negative length panics rather than erroring. A guess
+// must never be able to take the process down.
+func TestLightDataSurvivesAPanickingLayout(t *testing.T) {
+	// A proxy-layout section whose leading bytes make the vanilla reading
+	// produce a negative array length.
+	data := buildLight(t, false, 0x3c040, 0x40)
+	var l lightData
+	if _, err := l.ReadFrom(bytes.NewReader(data)); err != nil {
+		t.Fatalf("proxy section rejected: %v", err)
+	}
+	// And an outright hostile one must error, not panic.
+	hostile := []byte{0x01, 0x01, 0xff, 0xff, 0xff, 0xff, 0x0f, 0x00, 0x00}
+	var m lightData
+	if _, err := m.ReadFrom(bytes.NewReader(hostile)); err == nil {
+		t.Error("accepted hostile light data")
+	}
+}
