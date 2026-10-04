@@ -186,3 +186,49 @@ func ExampleTranslateMsg() {
 	// Hello, world!
 	// Prefix, 11112222 again 3333 and 1111 lastly 2222 and also 1111 again!
 }
+
+// TestReadFromNonJSONIsReadLiterally covers what a protocol-downgrading proxy
+// hands over: a chat component that is not JSON at all. Dropping the
+// connection over a line of text is far worse than displaying it.
+func TestReadFromNonJSONIsReadLiterally(t *testing.T) {
+	var m chat.Message
+	raw := "welcome to the server"
+	if _, err := m.ReadFrom(bytes.NewReader(encodeString(raw))); err != nil {
+		t.Fatalf("ReadFrom(%q) = %v, want no error", raw, err)
+	}
+	if m.Text != raw {
+		t.Errorf("Text = %q, want %q", m.Text, raw)
+	}
+}
+
+// TestReadFromMalformedJSONStillErrors is the other half, and the point of
+// putting the leniency in ReadFrom rather than UnmarshalJSON: something that
+// *is* JSON has to be a well-formed component, so a broken one is an error
+// rather than a silently empty message.
+func TestReadFromMalformedJSONStillErrors(t *testing.T) {
+	var m chat.Message
+	if _, err := m.ReadFrom(bytes.NewReader(encodeString(`{"text":`))); err == nil {
+		t.Error("ReadFrom(malformed object) = nil, want an error")
+	}
+}
+
+// TestReadFromJSONStillDecodes guards against the fallback swallowing the
+// normal case.
+func TestReadFromJSONStillDecodes(t *testing.T) {
+	var m chat.Message
+	if _, err := m.ReadFrom(bytes.NewReader(encodeString(`{"text":"hi"}`))); err != nil {
+		t.Fatalf("ReadFrom(object) = %v, want no error", err)
+	}
+	if m.Text != "hi" {
+		t.Errorf("Text = %q, want %q", m.Text, "hi")
+	}
+}
+
+// encodeString renders s as the length-prefixed string the packet carries.
+func encodeString(s string) []byte {
+	var buf bytes.Buffer
+	if _, err := pk.String(s).WriteTo(&buf); err != nil {
+		panic(err)
+	}
+	return buf.Bytes()
+}

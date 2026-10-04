@@ -139,8 +139,31 @@ func (m *Message) ReadFrom(r io.Reader) (int64, error) {
 	if err != nil {
 		return n, err
 	}
-	err = json.Unmarshal([]byte(code), m)
-	return n, err
+	if err := json.Unmarshal([]byte(code), m); err != nil {
+		// A protocol-downgrading proxy (ViaProxy) sometimes hands over a
+		// component that is not JSON at all -- the line as plain text. The
+		// server this was seen against is 26.2, which carries chat as NBT;
+		// what comes back out of the downgrade is not always re-encoded.
+		//
+		// The leniency is deliberately here and not in UnmarshalJSON:
+		// anything that *is* JSON still has to be a well-formed component,
+		// so a malformed one is an error rather than a silently empty
+		// message. Only a payload that is not JSON in the first place is
+		// read literally, and a chat line is display-only -- unlike
+		// dimension_type, nothing downstream does arithmetic on it.
+		// The discriminator is the one UnmarshalJSON already uses: a
+		// component always starts '{', '[' or '"'. Anything else was never
+		// JSON, so read it as the text it is -- but a payload that does
+		// start like a component and then fails to parse is a real error,
+		// not a line to display verbatim.
+		if trimmed := bytes.TrimSpace([]byte(code)); len(trimmed) > 0 &&
+			trimmed[0] != '{' && trimmed[0] != '[' && trimmed[0] != '"' {
+			*m = Message{Text: string(code)}
+			return n, nil
+		}
+		return n, err
+	}
+	return n, nil
 }
 
 // WriteTo encode Message into a ChatMsg packet
