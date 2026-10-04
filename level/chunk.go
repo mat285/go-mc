@@ -454,16 +454,88 @@ func (l *lightData) WriteTo(w io.Writer) (int64, error) {
 	}.WriteTo(w)
 }
 
+// ReadFrom decodes the light section, tolerating a proxy that leaves out the
+// Trust Edges boolean.
+//
+// A real 1.20.2 server opens this section with that boolean. ViaProxy,
+// downgrading 26.2 to 764, does not send it -- so a client that reads it eats
+// the sky-light mask's length byte and every field after shifts by one. What
+// comes out the far end is four zero-length masks and a run of light data read
+// as an array length, which surfaces as "VarInt is too big" and, before this,
+// killed the connection on every single join.
+//
+// Rather than guess from the leading byte -- 0x01 is equally a true boolean and
+// a one-long mask -- both layouts are tried and the answer has to prove itself:
+// it must consume the section exactly, and the number of light arrays must
+// match the bits set in the mask that announces them. Two independent checks
+// over twelve kilobytes of framing is not something a wrong reading survives.
+// Nothing here is lenient; a section that fits neither layout is still an error.
 func (l *lightData) ReadFrom(r io.Reader) (int64, error) {
-	var TrustEdges pk.Boolean
-	var RevSkyLightMask, RevBlockLightMask pk.BitSet
-	return pk.Tuple{
-		&TrustEdges, // Trust Edges
-		&l.SkyLightMask,
-		&l.BlockLightMask,
-		&RevSkyLightMask,
-		&RevBlockLightMask,
-		pk.Array(&l.SkyLight),
-		pk.Array(&l.BlockLight),
-	}.ReadFrom(r)
+	// Light is the last field of a chunk packet and Scan bounds the reader to
+	// that packet, so this takes the light section and nothing else.
+	buf, err := io.ReadAll(r)
+	if err != nil {
+		return 0, err
+	}
+	n := int64(len(buf))
+
+	withEdges, errWith := decodeLight(buf, true)
+	if errWith == nil {
+		*l = *withEdges
+		return n, nil
+	}
+	withoutEdges, errWithout := decodeLight(buf, false)
+	if errWithout == nil {
+		*l = *withoutEdges
+		return n, nil
+	}
+	return n, fmt.Errorf(
+		"light data fits neither layout: with trust-edges: %w; without (ViaProxy): %v",
+		errWith, errWithout)
+}
+
+// decodeLight parses one candidate layout and reports whether it holds up.
+func decodeLight(buf []byte, trustEdges bool) (*lightData, error) {
+	var (
+		out      lightData
+		edges    pk.Boolean
+		revSky   pk.BitSet
+		revBlock pk.BitSet
+		fields   []pk.FieldDecoder
+	)
+	if trustEdges {
+		fields = append(fields, &edges)
+	}
+	fields = append(fields,
+		&out.SkyLightMask, &out.BlockLightMask,
+		&revSky, &revBlock,
+		pk.Array(&out.SkyLight), pk.Array(&out.BlockLight),
+	)
+
+	rd := bytes.NewReader(buf)
+	for i, f := range fields {
+		if _, err := f.ReadFrom(rd); err != nil {
+			return nil, fmt.Errorf("field[%d]: %w", i, err)
+		}
+	}
+	if rest := rd.Len(); rest != 0 {
+		return nil, fmt.Errorf("%d bytes left over", rest)
+	}
+	if got, want := len(out.SkyLight), countBits(out.SkyLightMask); got != want {
+		return nil, fmt.Errorf("%d sky arrays for %d mask bits", got, want)
+	}
+	if got, want := len(out.BlockLight), countBits(out.BlockLightMask); got != want {
+		return nil, fmt.Errorf("%d block arrays for %d mask bits", got, want)
+	}
+	return &out, nil
+}
+
+// countBits counts the set bits of a mask, which is how many light arrays
+// follow it.
+func countBits(set pk.BitSet) int {
+	total := 0
+	for _, word := range set {
+		total += bits.OnesCount64(uint64(word))
+	}
+	return total
 }
