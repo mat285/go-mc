@@ -77,7 +77,15 @@ func (m *Manager) handlePlayerChat(packet pk.Packet) error {
 		chatType        chat.Type
 	)
 	if err := packet.Scan(&sender, &index, &signature, &body, &unsignedContent, &filter, &chatType); err != nil {
-		return err
+		// One chat line the client cannot read must not end the session.
+		//
+		// Behind ViaProxy this packet is reassembled from a 26.2 original with
+		// signatures stripped, and it does not always come out the shape a 764
+		// client expects -- the last field runs off the end of the packet. The
+		// bot used to drop the connection over it. Losing a line of chat is a
+		// far smaller harm; whoever registers a handler of their own at a
+		// higher priority can still see the raw bytes and work out why.
+		return nil
 	}
 
 	unpackedMsg, err := body.Unpack(&m.SignatureCache)
